@@ -1,0 +1,29 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getDocument, readFileBytes } from "@/lib/storage";
+
+export const runtime = "nodejs";
+
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const doc = await getDocument(id);
+  if (!doc) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const variant = req.nextUrl.searchParams.get("variant") ?? "auto";
+  const wantSigned = variant === "signed" || (variant === "auto" && doc.signedFile);
+  const target = wantSigned && doc.signedFile ? doc.signedFile : doc.originalFile;
+  const bytes = await readFileBytes(target);
+
+  const filename =
+    wantSigned && doc.signedFile
+      ? doc.name.replace(/\.pdf$/i, "") + ".signed.pdf"
+      : doc.name;
+
+  return new NextResponse(new Uint8Array(bytes), {
+    status: 200,
+    headers: {
+      "content-type": "application/pdf",
+      "content-disposition": `inline; filename="${filename}"`,
+      "cache-control": "no-store",
+    },
+  });
+}
