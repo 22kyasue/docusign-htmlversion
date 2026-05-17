@@ -16,12 +16,53 @@ as middlemen for *your own* signatures on *your own* documents is ridiculous.
 - `react-signature-canvas` for the signature pad
 - JSON-on-disk for the metadata DB — keep it simple, keep it portable
 
-## Run it
+## Install as a Claude Code skill
+
+If you use [Claude Code](https://claude.com/claude-code), Sovereign Sign ships as
+a one-command-installable skill. Anyone who clones this repo can wire it up to
+their own Claude in two steps:
+
+```powershell
+# Windows
+git clone https://github.com/22kyasue/docusign-htmlversion.git
+cd docusign-htmlversion
+./install.ps1
+```
+
+```bash
+# macOS / Linux
+git clone https://github.com/22kyasue/docusign-htmlversion.git
+cd docusign-htmlversion
+./install.sh
+```
+
+What the installer does:
+
+1. Copies the skill manifest into `~/.claude/skills/sovereign-sign/SKILL.md`.
+2. Writes `~/.claude/skills/sovereign-sign/config.json` with the absolute path
+   of *your* clone and the port you want to use (defaults to `3789`).
+3. Runs `npm install` so the local dev server is ready to go.
+
+Then in any Claude Code session from any project:
+
+```
+/sovereign-sign
+```
+
+Claude will read the config, check whether the local server is up, start it if
+it isn't, and tell you which URL to open.
+
+Useful flags:
+
+- `./install.ps1 -Port 4000` (or `--port 4000` on bash) to bind a different port
+- `./install.ps1 -Force` to overwrite an existing install
+- `./install.ps1 -SkipDeps` if you've already run `npm install`
+
+## Run it manually (no skill required)
 
 ```bash
 npm install
-npm run dev
-# → http://localhost:3000
+npm run dev          # → http://localhost:3000 (or whichever port you pass)
 ```
 
 The `postinstall` script copies the pdfjs worker into `public/` so the renderer
