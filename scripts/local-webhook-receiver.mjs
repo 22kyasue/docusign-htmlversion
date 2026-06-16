@@ -10,11 +10,12 @@ const PORT = Number(process.env.RECEIVER_PORT || 4545);
 const SECRET = process.env.DOCUSIGN_API_SECRET || "";
 const LOG = process.env.RECEIVER_LOG || "webhook-received.log";
 
-function verify(ts, sig, raw) {
+function verify(ts, sig, raw, eventId) {
   if (!SECRET) return true; // local mode without secret
-  if (!ts || !sig) return false;
+  if (!ts || !sig || !eventId) return false;
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
-  const expected = createHmac("sha256", SECRET).update(`${ts}.${raw}`).digest("hex");
+  // ts.eventId.body — matches lib/webhook.ts and the cockpit receiver.
+  const expected = createHmac("sha256", SECRET).update(`${ts}.${eventId}.${raw}`).digest("hex");
   const a = Buffer.from(expected), b = Buffer.from(sig);
   return a.length === b.length && timingSafeEqual(a, b);
 }
@@ -27,7 +28,7 @@ http
       const ts = req.headers["x-docusign-timestamp"];
       const sig = req.headers["x-docusign-signature"];
       const key = req.headers["x-idempotency-key"];
-      const ok = verify(ts, sig, raw);
+      const ok = verify(ts, sig, raw, key);
       appendFileSync(
         LOG,
         JSON.stringify({ at: new Date().toISOString(), ok, idempotencyKey: key, body: raw }) + "\n",

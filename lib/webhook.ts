@@ -43,14 +43,16 @@ export function buildCompletionPayload(doc: DocumentRecord): CompletionPayload {
   };
 }
 
-function sign(body: string, secret: string): { ts: string; sig: string } {
+function sign(body: string, secret: string, eventId: string): { ts: string; sig: string } {
   const ts = Math.floor(Date.now() / 1000).toString();
-  const sig = createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex");
+  // eventId is bound into the signed string (ts.eventId.body) to match the cockpit
+  // receiver — so the x-idempotency-key header can't be swapped on a replayed body.
+  const sig = createHmac("sha256", secret).update(`${ts}.${eventId}.${body}`).digest("hex");
   return { ts, sig };
 }
 
 async function postOnce(url: string, body: string, secret: string, eventId: string): Promise<number> {
-  const { ts, sig } = sign(body, secret);
+  const { ts, sig } = sign(body, secret, eventId);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ATTEMPT_TIMEOUT_MS);
   try {
