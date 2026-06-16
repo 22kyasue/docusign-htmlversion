@@ -69,15 +69,33 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  // Read the raw body as text (not req.json()) on purpose: the HMAC signature
+  // is computed over the exact raw bytes, so we must verify before parsing.
+  // Don't "tidy" this into req.json() — it would break auth.
   const raw = await req.text();
 
-  // Enforce HMAC when configured. Local dev (no secret set) skips auth so the
-  // manual creation UI can call this endpoint directly.
+  // Auth policy — fail closed by default.
+  //   - If DOCUSIGN_API_SECRET is configured, every create must carry a valid
+  //     HMAC (the cockpit path).
+  //   - If it is NOT configured, creation is rejected UNLESS the operator has
+  //     explicitly opted into unauthenticated local use via
+  //     ALLOW_UNAUTHENTICATED_CONTRACTS=1. This keeps the manual UI usable on
+  //     localhost while preventing a public deploy that forgot to set a secret
+  //     from silently accepting contract creation from anyone.
   if (isApiAuthConfigured()) {
     const auth = verifyApiRequest(req, raw);
     if (!auth.ok) {
       return NextResponse.json({ error: auth.error }, { status: auth.status });
     }
+  } else if (process.env.ALLOW_UNAUTHENTICATED_CONTRACTS !== "1") {
+    return NextResponse.json(
+      {
+        error:
+          "contract creation is not authenticated: set DOCUSIGN_API_SECRET, " +
+          "or ALLOW_UNAUTHENTICATED_CONTRACTS=1 for local use",
+      },
+      { status: 503 },
+    );
   }
 
   let parsedJson: unknown;

@@ -60,10 +60,16 @@ Pick the URL based on what the user asked for:
 
 | User intent | URL |
 |---|---|
-| "sign this PDF" / "I have a PDF that needs a signature" | `http://localhost:<port>/` → upload section |
+| "sign this PDF" / "I have a PDF that needs a signature" (legacy PDF flow) | `http://localhost:<port>/` → "Legacy: PDF documents" section |
 | "draft a contract" / "send an agreement" / "I need an SOW" | `http://localhost:<port>/contracts/new` |
-| "show me what I've signed" / "list my documents" | `http://localhost:<port>/` |
+| "show me what I've signed" / "list my contracts" | `http://localhost:<port>/contracts` |
 | Specific contract id | `http://localhost:<port>/contracts/<id>` |
+| **Send a contract to a counterparty to sign** | the per-signer magic link returned by create: `http://localhost:<port>/contracts/<id>?t=<token>` |
+
+> NOTE — two separate flows: `/contracts/...` is the HTML-contract flow (template +
+> magic-link signing, the one you send to clients). `/sign/<id>` is the **legacy
+> PDF-upload** flow and only resolves a `documents` record — do NOT point a contract
+> signer there; their link is `/contracts/<id>?t=<token>`.
 
 Tell the user the URL and what to do next. Do **not** try to drive the browser unless the user explicitly asks — local Playwright might not be authorized.
 
@@ -113,8 +119,8 @@ If the printed digest matches the "Signed SHA-256" on the audit page, the PDF ha
 | `GET`  | `/api/documents/[id]` | fetch metadata |
 | `GET`  | `/api/documents/[id]/file?variant=signed\|original` | stream the PDF |
 | `POST` | `/api/documents/[id]/sign` | stamp signature image, append audit page |
-| `GET`  | `/api/contracts` | list HTML contracts |
-| `POST` | `/api/contracts` | create a new contract from template + variables |
-| `GET`  | `/api/contracts/[id]` | fetch contract |
-| `POST` | `/api/contracts/[id]/sign` | record a signer's signature (magic-link token in `?t=`) |
-| `POST` | `/api/contracts/[id]/snapshot` | freeze the contract to PDF once all signers have signed |
+| `GET`  | `/api/contracts` | list HTML contracts (signer tokens stripped) |
+| `POST` | `/api/contracts` | create a contract from template + variables; returns per-signer tokens + magic-link paths. Requires HMAC auth when `DOCUSIGN_API_SECRET` is set; otherwise rejected unless `ALLOW_UNAUTHENTICATED_CONTRACTS=1` |
+| `GET`  | `/api/contracts/[id]` | fetch contract (signer tokens stripped) |
+| `POST` | `/api/contracts/[id]/sign` | record a signer's signature. Token goes in the **JSON body** (`{ token, signaturePngDataUrl }`), not the query string. The `?t=` is only on the signer *page* URL |
+| `GET`  | `/api/contracts/[id]/snapshot` | stream the frozen signed **HTML** snapshot (created automatically when the last signer signs). Responds with `x-content-sha256` so callers can verify the bytes. There is no PDF export for contracts yet — the canonical artifact is this HTML snapshot |

@@ -41,7 +41,7 @@ export async function appendAuditPage(input: AuditPageInput): Promise<Uint8Array
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
   const page = pdf.addPage();
-  const { width, height } = page.getSize();
+  const { height } = page.getSize();
   const margin = 50;
   let y = height - margin;
 

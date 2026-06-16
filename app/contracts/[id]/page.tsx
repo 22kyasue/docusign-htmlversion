@@ -1,5 +1,4 @@
 import { notFound } from "next/navigation";
-import Link from "next/link";
 import { getContract } from "@/lib/contract-storage";
 import {
   CONTRACT_CSS,
@@ -17,6 +16,13 @@ interface PageProps {
   searchParams: Promise<{ t?: string }>;
 }
 
+type TokenStatus =
+  | "valid"
+  | "already_signed"
+  | "expired"
+  | "invalid"
+  | "no_token";
+
 export default async function ContractPage({ params, searchParams }: PageProps) {
   const { id } = await params;
   const { t: token } = await searchParams;
@@ -24,9 +30,8 @@ export default async function ContractPage({ params, searchParams }: PageProps) 
   const c = await getContract(id);
   if (!c) notFound();
 
-  // Match the token (if any) to a signer.
   const activeSigner = token ? c.signers.find((s) => s.token === token) : undefined;
-  const tokenStatus = activeSigner
+  const tokenStatus: TokenStatus = activeSigner
     ? isTokenExpired(activeSigner.tokenExpiresAt)
       ? "expired"
       : activeSigner.signedAt
@@ -36,8 +41,41 @@ export default async function ContractPage({ params, searchParams }: PageProps) 
       ? "invalid"
       : "no_token";
 
-  // Render the contract body. For signed signers, inline their PNG so the
-  // page shows the actual stroke they drew.
+  const isCompleted = c.status === "completed";
+
+  // Authz: the contract body contains the full commercial terms (parties,
+  // legal names, price, payment, IP addresses in the audit trail). Show it only
+  // to someone who arrived with a valid/already-signed magic link, or for a
+  // completed contract (the signed receipt). A bare contract id is NOT enough.
+  const mayViewBody =
+    tokenStatus === "valid" ||
+    tokenStatus === "already_signed" ||
+    isCompleted;
+
+  if (!mayViewBody) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-lg flex-col justify-center gap-6 px-5 py-12">
+        <Brand />
+        <div className="rounded-2xl border border-zinc-200 bg-white p-7 text-center shadow-sm">
+          <h1 className="text-lg font-semibold text-zinc-900">
+            署名用リンクが必要です
+          </h1>
+          <p className="mt-3 text-sm leading-relaxed text-zinc-600">
+            {tokenStatus === "expired"
+              ? "このリンクは有効期限が切れています。お手数ですが、新しい署名用リンクの発行をご依頼ください。"
+              : tokenStatus === "invalid"
+                ? "このリンクは無効です。メールに記載された正しい署名用リンクから、もう一度お開きください。"
+                : "この契約書をご覧いただくには、メールでお送りした署名用リンクからアクセスしてください。"}
+          </p>
+        </div>
+        <p className="text-center text-xs text-zinc-400">
+          リンクに心当たりがない場合は、送信元にお問い合わせください。
+        </p>
+      </main>
+    );
+  }
+
+  // Render the body with each signed party's stroke inlined.
   let body = renderContractBody(c);
   for (const s of c.signers) {
     if (!s.signedAt || !s.signatureImageFile) continue;
@@ -51,66 +89,46 @@ export default async function ContractPage({ params, searchParams }: PageProps) 
   }
 
   const signedCount = c.signers.filter((s) => s.signedAt).length;
-  const isCompleted = c.status === "completed";
+  const totalCount = c.signers.length;
 
   return (
-    <main className="mx-auto flex max-w-4xl flex-col gap-6 px-4 py-8 sm:px-6">
-      <header className="flex flex-col gap-2 border-b border-zinc-200 pb-4 dark:border-zinc-800 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <Link href="/contracts" className="text-xs text-zinc-500 hover:underline">
-            ← Contracts
-          </Link>
-          <h1 className="text-xl font-semibold">{c.variables.projectName}</h1>
-          <p className="font-mono text-xs text-zinc-500">
-            {c.id} · {signedCount}/{c.signers.length} signed
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <span
-            className={
-              isCompleted
-                ? "rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200"
-                : c.status === "voided"
-                  ? "rounded-full bg-rose-100 px-3 py-1 text-xs font-medium text-rose-800 dark:bg-rose-900/40 dark:text-rose-200"
-                  : "rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-            }
-          >
-            {c.status}
+    <main className="mx-auto flex max-w-3xl flex-col gap-5 px-4 py-6 sm:px-6 sm:py-10">
+      <Brand />
+
+      <header className="flex flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">
+            電子署名のお願い
           </span>
-          {isCompleted && (
-            <a
-              href={`/api/contracts/${c.id}/snapshot`}
-              target="_blank"
-              rel="noreferrer"
-              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
-            >
-              View signed snapshot
-            </a>
-          )}
+          <StatusPill status={c.status} />
         </div>
+        <h1 className="text-lg font-semibold leading-snug text-zinc-900 sm:text-xl">
+          {c.variables.projectName}
+        </h1>
+        <Progress signed={signedCount} total={totalCount} />
       </header>
 
-      {tokenStatus === "invalid" && (
-        <Banner tone="error">
-          このリンクは無効です。署名用の正しいリンクをご確認ください。
-        </Banner>
-      )}
-      {tokenStatus === "expired" && (
-        <Banner tone="error">
-          このリンクは有効期限が切れています。新しい署名リンクの発行をご依頼ください。
-        </Banner>
-      )}
       {tokenStatus === "already_signed" && (
         <Banner tone="ok">
-          署名済みです。署名日時:{" "}
-          <span className="font-mono">{activeSigner?.signedAt}</span>
+          ご署名ありがとうございました。お客様のご署名は受け付けております。
+          {activeSigner?.signedAt && (
+            <span className="mt-1 block font-mono text-xs opacity-80">
+              署名日時 {fmtJa(activeSigner.signedAt)}
+            </span>
+          )}
+        </Banner>
+      )}
+
+      {isCompleted && (
+        <Banner tone="ok">
+          両者のご署名がそろい、本契約は締結されました。下記が署名済みの契約書です。
         </Banner>
       )}
 
       <style dangerouslySetInnerHTML={{ __html: CONTRACT_CSS }} />
 
       <article
-        className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 sm:p-10"
+        className="overflow-hidden rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm sm:p-8"
         dangerouslySetInnerHTML={{ __html: body }}
       />
 
@@ -123,25 +141,71 @@ export default async function ContractPage({ params, searchParams }: PageProps) 
         />
       )}
 
-      <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">
-          Audit trail
-        </h2>
-        <ul className="mt-3 flex flex-col gap-1.5 text-sm">
-          {c.audit.map((e, i) => (
-            <li key={i} className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-xs">
-              <span className="text-zinc-400">{e.at}</span>
-              <span className="font-medium">{e.action}</span>
-              {e.actor && <span className="text-zinc-500">by {e.actor}</span>}
-              {e.ip && <span className="text-zinc-400">ip {e.ip}</span>}
-              {e.htmlSnapshotSha256 && (
-                <span className="text-zinc-400">sha256 {e.htmlSnapshotSha256.slice(0, 16)}…</span>
-              )}
-            </li>
-          ))}
-        </ul>
-      </section>
+      {isCompleted && (
+        <a
+          href={`/api/contracts/${c.id}/snapshot`}
+          target="_blank"
+          rel="noreferrer"
+          className="self-center rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+        >
+          署名済み契約書を別タブで開く
+        </a>
+      )}
+
+      <footer className="mt-2 border-t border-zinc-200 pt-4 text-center text-xs leading-relaxed text-zinc-400">
+        本ページは Tobira Studio の電子契約システムにより安全に配信されています。
+        <br className="hidden sm:block" />
+        ご署名内容は SHA-256 により改ざん検知され、監査記録として保存されます。
+      </footer>
     </main>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="flex items-center justify-center gap-2 text-zinc-500">
+      <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" aria-hidden />
+      <span className="text-sm font-semibold tracking-tight text-zinc-700">
+        Tobira Studio
+      </span>
+    </div>
+  );
+}
+
+function Progress({ signed, total }: { signed: number; total: number }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-zinc-100">
+        <div
+          className="h-full rounded-full bg-emerald-500 transition-all"
+          style={{ width: `${total > 0 ? (signed / total) * 100 : 0}%` }}
+        />
+      </div>
+      <span className="shrink-0 text-xs font-medium text-zinc-500">
+        署名 {signed} / {total}
+      </span>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const map: Record<string, { label: string; cls: string }> = {
+    completed: {
+      label: "締結済み",
+      cls: "bg-emerald-100 text-emerald-800",
+    },
+    pending_signatures: {
+      label: "署名待ち",
+      cls: "bg-amber-100 text-amber-800",
+    },
+    voided: { label: "無効", cls: "bg-rose-100 text-rose-800" },
+    draft: { label: "下書き", cls: "bg-zinc-200 text-zinc-700" },
+  };
+  const { label, cls } = map[status] ?? map.draft;
+  return (
+    <span className={`rounded-full px-3 py-1 text-xs font-medium ${cls}`}>
+      {label}
+    </span>
   );
 }
 
@@ -154,9 +218,20 @@ function Banner({
 }) {
   const cls =
     tone === "ok"
-      ? "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200"
-      : "border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200";
+      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+      : "border-rose-300 bg-rose-50 text-rose-900";
   return (
-    <div className={`rounded-lg border px-4 py-3 text-sm ${cls}`}>{children}</div>
+    <div className={`rounded-xl border px-4 py-3 text-sm leading-relaxed ${cls}`}>
+      {children}
+    </div>
   );
+}
+
+function fmtJa(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${p(
+    d.getHours(),
+  )}:${p(d.getMinutes())}`;
 }

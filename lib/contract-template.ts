@@ -1,8 +1,17 @@
 import type { Contract, Signer } from "./contract-types";
 
-// HTML escape — used on every interpolated field. The template uses tagged
-// templates (`html\`...\``) which auto-escape. Bullet lists pass through the
-// same escape per item.
+// Already-rendered, trusted HTML. The `html\`\`` template returns this so that
+// nested fragments (a signer block, a list of <li>) pass through unescaped,
+// while every plain value is escaped. The only way to get raw HTML into the
+// output is to have it produced by `html\`\``/`raw()` — so the safe path is the
+// default and the unescaped path is explicit and greppable. This is what fixes
+// the double-escape that turned signer blocks and bullet lists into visible
+// `&lt;li&gt;` text.
+class RawHtml {
+  constructor(readonly value: string) {}
+}
+
+// Escape a single value for safe HTML text/attribute context.
 function esc(value: unknown): string {
   if (value === null || value === undefined) return "";
   return String(value)
@@ -13,16 +22,31 @@ function esc(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
-function html(strings: TemplateStringsArray, ...values: unknown[]): string {
+// Mark a string as trusted, pre-rendered HTML that must NOT be re-escaped.
+// Use only for HTML the code itself generated, never for user input.
+function raw(value: string): RawHtml {
+  return new RawHtml(value);
+}
+
+// Render one interpolated value:
+//   - RawHtml         → passed through untouched (already safe HTML)
+//   - array           → each element rendered+joined (arrays are HTML fragments)
+//   - everything else → escaped
+function renderValue(v: unknown): string {
+  if (v instanceof RawHtml) return v.value;
+  if (Array.isArray(v)) return v.map(renderValue).join("");
+  return esc(v);
+}
+
+// Tagged template for HTML. Returns RawHtml so the result can be safely nested
+// inside another `html\`\`` without being escaped again.
+function html(strings: TemplateStringsArray, ...values: unknown[]): RawHtml {
   let out = "";
   strings.forEach((s, i) => {
     out += s;
-    if (i < values.length) {
-      const v = values[i];
-      out += Array.isArray(v) ? v.join("") : esc(v);
-    }
+    if (i < values.length) out += renderValue(values[i]);
   });
-  return out;
+  return raw(out);
 }
 
 function fmtJpy(n: number): string {
@@ -36,11 +60,12 @@ function fmtDate(iso: string): string {
   return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
 
-function listItems(items: string[]): string {
-  return items.map((it) => html`<li>${it}</li>`).join("");
+function listItems(items: string[]): RawHtml {
+  // `html\`\`` escapes each item, so plain strings are safe here.
+  return raw(items.map((it) => html`<li>${it}</li>`.value).join(""));
 }
 
-function signerBlock(s: Signer, contract: Contract): string {
+function signerBlock(s: Signer, contract: Contract): RawHtml {
   const v = contract.variables;
   const isStudio = s.role === "studio";
   const company = isStudio ? v.studioCompany : v.clientCompany;
@@ -91,8 +116,8 @@ export function renderContractBody(contract: Contract): string {
       <section>
         <h2>第1条（業務内容）</h2>
         <p>甲は乙に対し、本契約に基づき以下の業務（以下「本件業務」という）を提供する。</p>
-        <ul class="deliverables">${listItems(v.deliverables.map(esc))}</ul>
-        <p>提供言語: ${esc(v.languagePairs.join(" / "))}</p>
+        <ul class="deliverables">${listItems(v.deliverables)}</ul>
+        <p>提供言語: ${v.languagePairs.join(" / ")}</p>
         ${
           v.scopeNotes
             ? html`<p class="notes">補足: ${v.scopeNotes}</p>`
@@ -162,11 +187,11 @@ export function renderContractBody(contract: Contract): string {
       <section class="signatures">
         <h2>署名</h2>
         <div class="signer-grid">
-          ${contract.signers.map((s) => signerBlock(s, contract)).join("")}
+          ${contract.signers.map((s) => signerBlock(s, contract))}
         </div>
       </section>
     </article>
-  `;
+  `.value;
 }
 
 // CSS used on both the live page and the print view.

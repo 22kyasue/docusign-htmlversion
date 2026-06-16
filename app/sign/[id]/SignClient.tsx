@@ -144,7 +144,13 @@ export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientP
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           signaturePngDataUrl: dataUrl,
-          fields: fields.map(({ id: _id, ...rest }) => rest),
+          fields: fields.map((f) => ({
+            page: f.page,
+            xRatio: f.xRatio,
+            yRatio: f.yRatio,
+            widthRatio: f.widthRatio,
+            heightRatio: f.heightRatio,
+          })),
           actor: actor || undefined,
         }),
       });
