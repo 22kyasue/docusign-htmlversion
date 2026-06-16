@@ -15,13 +15,19 @@ export default function UploadForm() {
     const fd = new FormData(form);
     setBusy(true);
     try {
-      const res = await fetch("/api/documents", { method: "POST", body: fd });
-      const json = (await res.json()) as { document?: { id: string }; error?: string };
+      const res = await fetch("/api/documents/upload", { method: "POST", body: fd });
+      const json = (await res.json()) as {
+        document?: { id: string };
+        signPath?: string;
+        error?: string;
+      };
       if (!res.ok || !json.document) {
         setError(json.error ?? "upload failed");
         return;
       }
-      router.push(`/sign/${json.document.id}`);
+      // signPath carries the freshly minted ?t= token so the operator lands on
+      // the token-gated signer page.
+      router.push(json.signPath ?? `/sign/${json.document.id}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "network error");
     } finally {

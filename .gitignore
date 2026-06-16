@@ -42,6 +42,14 @@ next-env.d.ts
 
 # sovereign-sign runtime data (your PDFs, audit log)
 /data/
+# encrypted backups produced by scripts/backup-data.mjs
+/backups/
+# local dev/test scratch output (server logs, e2e fixtures, screenshots)
+/devserver.out
+/receiver.out
+/webhook-received.log
+/e2e-*.json
+/e2e-*.png
 
 # pdfjs worker is copied by postinstall — no need to commit
 /public/pdf.worker.min.mjs

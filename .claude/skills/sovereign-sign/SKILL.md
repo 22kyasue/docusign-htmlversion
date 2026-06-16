@@ -114,11 +114,12 @@ If the printed digest matches the "Signed SHA-256" on the audit page, the PDF ha
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET`  | `/api/documents` | list uploaded PDFs |
-| `POST` | `/api/documents` | upload (multipart, field `file`) |
-| `GET`  | `/api/documents/[id]` | fetch metadata |
-| `GET`  | `/api/documents/[id]/file?variant=signed\|original` | stream the PDF |
-| `POST` | `/api/documents/[id]/sign` | stamp signature image, append audit page |
+| `GET`  | `/api/documents` | list documents (signer tokens stripped) |
+| `POST` | `/api/documents` | **create** a token-gated signing job. HMAC-authenticated (cockpit/Manager path). JSON body `{ name, pdfBase64 \| pdfPath, signer:{name,email}, fields:[{page,xRatio,yRatio,widthRatio,heightRatio}], externalRef? }`. Returns `{ documentId, token, signUrl, expiresAt }`. Requires a valid HMAC when `DOCUSIGN_API_SECRET` is set; otherwise rejected unless `ALLOW_UNAUTHENTICATED_DOCUMENTS=1` |
+| `POST` | `/api/documents/upload` | operator browser upload (multipart, field `file`). Operator-gated (`x-operator-secret` == `DOCUSIGN_API_SECRET`, or open when no secret set). Returns `{ document:{id}, token, signPath }` |
+| `GET`  | `/api/documents/[id]` | fetch metadata (signer token stripped) |
+| `GET`  | `/api/documents/[id]/file?variant=signed\|original` | stream the PDF. **Access-controlled**: requires the signer token (`?t=` / `x-signer-token`) or the operator secret (`x-operator-secret`). A bare id → 401 |
+| `POST` | `/api/documents/[id]/sign` | record the signer's signature. Body `{ token, signaturePngDataUrl }` (NO fields — the field is server-stored). 401 invalid/expired token, 409 already-signed, 400 invalid/blank PNG. Stamps at the pre-placed field, appends audit page, writes HMAC anchor, seals read-only, fires the completion webhook |
 | `GET`  | `/api/contracts` | list HTML contracts (signer tokens stripped) |
 | `POST` | `/api/contracts` | create a contract from template + variables; returns per-signer tokens + magic-link paths. Requires HMAC auth when `DOCUSIGN_API_SECRET` is set; otherwise rejected unless `ALLOW_UNAUTHENTICATED_CONTRACTS=1` |
 | `GET`  | `/api/contracts/[id]` | fetch contract (signer tokens stripped) |

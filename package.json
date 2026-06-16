@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --no-warnings --experimental-strip-types scripts/test-png-validate.mjs",
+    "test": "node --no-warnings --experimental-strip-types scripts/test-png-validate.mjs && node --no-warnings --experimental-strip-types --import ./scripts/ts-resolve-hook-register.mjs --test scripts/test-anchor.mjs && node --no-warnings --experimental-strip-types --import ./scripts/ts-resolve-hook-register.mjs --test scripts/test-audit-log.mjs && node --no-warnings --experimental-strip-types --import ./scripts/ts-resolve-hook-register.mjs --test scripts/test-storage.mjs && node --no-warnings --experimental-strip-types --import ./scripts/ts-resolve-hook-register.mjs --test scripts/test-pdf-audit.mjs",
     "postinstall": "node scripts/copy-pdf-worker.mjs"
   },
   "dependencies": {

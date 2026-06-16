@@ -124,14 +124,18 @@ export default async function Home() {
                       {d.status}
                     </span>
                     <Link
-                      href={`/sign/${d.id}`}
+                      href={
+                        d.signer?.token
+                          ? `/sign/${d.id}?t=${encodeURIComponent(d.signer.token)}`
+                          : `/sign/${d.id}`
+                      }
                       className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm text-white hover:bg-zinc-700 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
                     >
                       {d.status === "signed" ? "View" : "Sign"}
                     </Link>
-                    {d.status === "signed" && (
+                    {d.status === "signed" && d.signer?.token && (
                       <a
-                        href={`/api/documents/${d.id}/file?variant=signed`}
+                        href={`/api/documents/${d.id}/file?variant=signed&t=${encodeURIComponent(d.signer.token)}`}
                         className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
                       >
                         Download

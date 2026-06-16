@@ -75,17 +75,28 @@ npm run build
 npm run start
 ```
 
-## Flow
+## Flow (PDF documents)
 
-1. Drop a PDF on the home page.
-2. You're sent to `/sign/<id>`. Tap anywhere on the rendered PDF to place a
-   signature field. Tap a field to remove it.
-3. Draw your signature on the pad on the right, optionally type a signer name,
-   hit **Sign & seal**.
-4. The server stamps the signature image into the PDF at each field, appends an
-   audit page with the original/signed SHA-256 and event history, re-hashes the
-   final output, and stores both files plus the metadata record.
-5. The home page now shows a **Download** button that streams the signed PDF.
+The PDF flow is now token-gated and DocuSign-style: the signature field is
+**pre-placed** by whoever creates the document; the signer just draws once.
+
+1. **Create** a document with a pre-positioned field, either via the operator
+   upload form on the home page (multipart, operator-gated) or via
+   `POST /api/documents` (HMAC-authenticated — this is the cockpit/Manager path).
+   Creation mints a single-use, 30-day, 192-bit signer token and returns a
+   `signUrl` of the form `/sign/<id>?t=<token>`.
+2. The signer opens the `signUrl`. The page is **token-gated** — a bare id shows
+   nothing. They see the rendered PDF with the field highlighted where their
+   signature will land, a JP signing panel, and a consent checkbox.
+3. They draw their signature and submit. The server validates the token (single
+   use; 401 invalid/expired, 409 already-signed) and the PNG (rejects
+   blank/header-only → 400), stamps the signature at the **server-stored** field
+   coordinates (never client-supplied), appends an audit page, re-hashes,
+   `fsync`s + atomically writes the signed file, writes the HMAC anchor, appends
+   the audit-log line, commits, then seals the file read-only.
+4. A completion webhook fires (after the response, with bounded retry) to the
+   configured cockpit, idempotent on `${documentId}:${signedSha256}`.
+5. The signed PDF is downloadable (token- or operator-gated).
 
 ## Data layout
 
@@ -97,16 +108,52 @@ data/
 
 Both directories are git-ignored. Back them up — they ARE the product.
 
-## Why this isn't snake oil
+## Tamper-evidence — what is and isn't guaranteed (read this honestly)
 
-- Visual signatures on PDFs are accepted under eIDAS SES, ESIGN, and Japan's
-  電子署名法 for most personal use cases. This tool produces exactly that, plus a
-  cryptographic audit trail.
-- Tamper evidence is the SHA-256 chain in the audit log. If the file is altered
-  after signing, the recorded hash no longer matches.
-- For stronger guarantees (PAdES, RFC 3161 timestamps, OpenTimestamps anchoring
-  to Bitcoin), see the roadmap below. The hooks are in place — extend
-  `lib/pdf.ts` and `lib/crypto.ts`.
+Visual signatures on PDFs are accepted under eIDAS SES, ESIGN, and Japan's
+電子署名法 for most personal use cases. This tool produces exactly that, plus the
+following integrity measures on the PDF-signing flow:
+
+- **SHA-256 of the signed file** is recorded on the document and printed on the
+  appended audit page.
+- **HMAC anchor**: alongside each signed file sits a `<file>.anchor.json` holding
+  `HMAC-SHA256(SERVER_SECRET, sha256hex)`. To forge a clean anchor for an altered
+  file you need `SERVER_SECRET` — so a disk editor who lacks the secret **cannot**
+  silently re-hash a tampered file past verification.
+- **Append-only audit log** (`data/audit.log`): one JSON line per event, only ever
+  appended by the app, line-tolerant on read. An independent record that survives
+  a corrupted metadata DB.
+- **Write-once + read-only**: the signed file is `fsync`'d via temp+rename and set
+  read-only after commit.
+
+What this does **NOT** claim — and we will not pretend otherwise:
+
+- It is **not** "cryptographically tamper-proof". The anchor + audit log defend
+  against a *motivated tamperer who does NOT hold `SERVER_SECRET`*. An attacker
+  who holds the secret (e.g. root on the box, who can read the process env) can
+  re-anchor any forgery. The OS read-only bit is accident-prevention, not an
+  attacker control.
+- It does **not** defend against deletion of the whole record (file + anchor + DB
+  row + log line). That requires shipping the anchor + audit log **off-box,
+  append-only** — see `scripts/backup-data.mjs` (local encrypted snapshots today;
+  off-box push is a documented TODO pending deploy).
+- It is **not** an externally-notarized timestamp. It proves the bytes are
+  unchanged since *we* sealed them — not, to a third party, *when*.
+
+For stronger guarantees (PAdES-LTV, RFC 3161 timestamps, OpenTimestamps Bitcoin
+anchoring) see the roadmap. The hooks are in `lib/pdf.ts`, `lib/crypto.ts`,
+`lib/anchor.ts`.
+
+## Secrets / environment
+
+| Var | Purpose |
+|---|---|
+| `DOCUSIGN_API_SECRET` | HMAC on the Manager→server API **and** the server→cockpit completion webhook (a wire key). When unset, create/upload is rejected unless `ALLOW_UNAUTHENTICATED_DOCUMENTS=1`. |
+| `SERVER_SECRET` | Keys the signed-file HMAC anchor (a storage key). Kept **distinct** from the wire key so rotating one never breaks the other. |
+| `SIGN_PUBLIC_BASE_URL` | Base for minted sign links (`http://localhost:3000` dev; `https://sign.tobira.studio` prod). |
+| `COMPLETION_WEBHOOK_URL` | Cockpit endpoint the completion webhook POSTs to. Unset → webhook skipped (recorded, not an error). |
+| `DOCUMENTS_PDF_ROOT` | Allowlisted root for the `pdfPath` create option (path-traversal guard). |
+| `BACKUP_PASSPHRASE` | Passphrase for `scripts/backup-data.mjs` encrypted snapshots. |
 
 ## Roadmap
 

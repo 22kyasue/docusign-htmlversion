@@ -1,18 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import SignaturePad from "react-signature-canvas";
 import type { SignatureField } from "@/lib/types";
 
 interface SignClientProps {
   docId: string;
+  token: string;
+  signerName: string;
   alreadySigned: boolean;
+  fields: SignatureField[];
   pdfUrl: string;
-}
-
-interface PlacedField extends SignatureField {
-  id: string;
 }
 
 interface RenderedPage {
@@ -21,20 +20,32 @@ interface RenderedPage {
   height: number;
 }
 
-const FIELD_WIDTH_RATIO = 0.22;
-const FIELD_HEIGHT_RATIO = 0.07;
-
-export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientProps) {
+export default function SignClient({
+  docId,
+  token,
+  signerName,
+  alreadySigned,
+  fields,
+  pdfUrl,
+}: SignClientProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const padWrapRef = useRef<HTMLDivElement | null>(null);
   const padRef = useRef<SignaturePad | null>(null);
+  // Width the canvas was last sized to. Mobile browsers fire `resize` on every
+  // scroll (URL bar collapses, changing only height) — re-sizing then would wipe
+  // a half-drawn signature. We only re-fit when the WIDTH actually changes.
+  const lastWidthRef = useRef<number>(0);
   const [pages, setPages] = useState<RenderedPage[]>([]);
-  const [fields, setFields] = useState<PlacedField[]>([]);
-  const [actor, setActor] = useState<string>("");
   const [busy, setBusy] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+  const [hasStroke, setHasStroke] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  // Render the PDF and draw the PRE-PLACED signature field box(es) over the
+  // correct page. The signer does NOT place fields — the box shows exactly where
+  // their signature will land, fixed by the document.
   useEffect(() => {
     let cancelled = false;
     async function render() {
@@ -42,9 +53,12 @@ export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientP
         const pdfjs = await import("pdfjs-dist");
         pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
 
-        const buf = await fetch(pdfUrl, { cache: "no-store" }).then((r) => r.arrayBuffer());
+        const buf = await fetch(pdfUrl, { cache: "no-store" }).then((r) => {
+          if (!r.ok) throw new Error(`PDF ${r.status}`);
+          return r.arrayBuffer();
+        });
         const task = pdfjs.getDocument({ data: new Uint8Array(buf) });
-        const doc = await task.promise;
+        const pdf = await task.promise;
         if (cancelled) return;
 
         const container = containerRef.current;
@@ -52,8 +66,8 @@ export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientP
         container.innerHTML = "";
         const rendered: RenderedPage[] = [];
 
-        for (let i = 1; i <= doc.numPages; i++) {
-          const page = await doc.getPage(i);
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
           const viewport = page.getViewport({ scale: 1.5 });
           const wrap = document.createElement("div");
           wrap.className = "relative inline-block";
@@ -66,74 +80,92 @@ export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientP
           canvas.height = viewport.height;
           canvas.className = "block border border-zinc-300 shadow-sm";
           wrap.appendChild(canvas);
-          container.appendChild(wrap);
 
+          // Draw the fixed field box(es) for this page so the signer sees where
+          // their mark goes. Highlighted, not interactive.
+          for (const f of fields.filter((fl) => fl.page === i - 1)) {
+            const box = document.createElement("div");
+            box.className =
+              "pointer-events-none absolute rounded border-2 border-emerald-500 bg-emerald-200/30";
+            box.style.left = `${f.xRatio * 100}%`;
+            box.style.top = `${f.yRatio * 100}%`;
+            box.style.width = `${f.widthRatio * 100}%`;
+            box.style.height = `${f.heightRatio * 100}%`;
+            const label = document.createElement("span");
+            label.className =
+              "absolute -top-5 left-0 whitespace-nowrap rounded bg-emerald-600 px-1.5 py-0.5 text-[10px] font-medium text-white";
+            label.textContent = "ご署名はこちらに入ります";
+            box.appendChild(label);
+            wrap.appendChild(box);
+          }
+
+          container.appendChild(wrap);
           const ctx = canvas.getContext("2d");
           if (!ctx) continue;
           await page.render({ canvasContext: ctx, viewport, canvas }).promise;
           rendered.push({ pageNumber: i, width: viewport.width, height: viewport.height });
         }
-
         if (!cancelled) setPages(rendered);
       } catch (err: unknown) {
-        if (!cancelled) {
-          setLoadError(err instanceof Error ? err.message : "failed to render PDF");
-        }
+        if (!cancelled) setLoadError(err instanceof Error ? err.message : "PDFの表示に失敗しました");
       }
     }
     render();
     return () => {
       cancelled = true;
     };
-  }, [pdfUrl]);
+  }, [pdfUrl, fields]);
 
-  function handlePageClick(e: React.MouseEvent<HTMLDivElement>) {
+  // Own all resize handling so a mobile scroll (height-only resize) can't wipe
+  // the mark. Only re-fit, and therefore only clear, on a genuine WIDTH change.
+  const resizePad = useCallback(() => {
+    const wrap = padWrapRef.current;
+    const pad = padRef.current;
+    if (!wrap || !pad) return;
+    const width = wrap.clientWidth;
+    if (width === lastWidthRef.current) return; // height-only resize → ignore
+    const isFirstFit = lastWidthRef.current === 0;
+    lastWidthRef.current = width;
+
+    const canvas = pad.getCanvas();
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    const height = 200;
+    canvas.width = width * ratio; // setting width/height clears the bitmap
+    canvas.height = height * ratio;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
+    const ctx = canvas.getContext("2d");
+    ctx?.scale(ratio, ratio);
+    pad.clear();
+    if (!isFirstFit) setHasStroke(false);
+  }, []);
+
+  useEffect(() => {
     if (alreadySigned) return;
-    const wrap = (e.target as HTMLElement).closest("[data-page-index]") as HTMLElement | null;
-    if (!wrap) return;
-    const pageIndex = Number(wrap.dataset.pageIndex);
-    const rect = wrap.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const xRatio = x / rect.width;
-    const yRatio = y / rect.height;
-    const id = `${pageIndex}-${Date.now()}`;
-    setFields((prev) => [
-      ...prev,
-      {
-        id,
-        page: pageIndex,
-        xRatio: Math.max(0, Math.min(1 - FIELD_WIDTH_RATIO, xRatio - FIELD_WIDTH_RATIO / 2)),
-        yRatio: Math.max(0, Math.min(1 - FIELD_HEIGHT_RATIO, yRatio - FIELD_HEIGHT_RATIO / 2)),
-        widthRatio: FIELD_WIDTH_RATIO,
-        heightRatio: FIELD_HEIGHT_RATIO,
-      },
-    ]);
-  }
+    resizePad();
+    window.addEventListener("resize", resizePad);
+    window.addEventListener("orientationchange", resizePad);
+    return () => {
+      window.removeEventListener("resize", resizePad);
+      window.removeEventListener("orientationchange", resizePad);
+    };
+  }, [resizePad, alreadySigned]);
 
-  function removeField(id: string) {
-    setFields((prev) => prev.filter((f) => f.id !== id));
+  function clearPad() {
+    padRef.current?.clear();
+    setHasStroke(false);
+    setError(null);
   }
-
-  const fieldsByPage = useMemo(() => {
-    const map = new Map<number, PlacedField[]>();
-    for (const f of fields) {
-      const arr = map.get(f.page) ?? [];
-      arr.push(f);
-      map.set(f.page, arr);
-    }
-    return map;
-  }, [fields]);
 
   async function applySignature() {
     setError(null);
-    if (fields.length === 0) {
-      setError("Tap the PDF to place at least one signature field.");
+    if (!confirmed) {
+      setError("「書類の内容を確認し、同意します」にチェックを入れてください。");
       return;
     }
     const pad = padRef.current;
     if (!pad || pad.isEmpty()) {
-      setError("Draw your signature first.");
+      setError("枠内にご署名（サイン）を描いてから「同意して署名する」を押してください。");
       return;
     }
     const dataUrl = pad.getCanvas().toDataURL("image/png");
@@ -142,107 +174,101 @@ export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientP
       const res = await fetch(`/api/documents/${docId}/sign`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          signaturePngDataUrl: dataUrl,
-          fields: fields.map((f) => ({
-            page: f.page,
-            xRatio: f.xRatio,
-            yRatio: f.yRatio,
-            widthRatio: f.widthRatio,
-            heightRatio: f.heightRatio,
-          })),
-          actor: actor || undefined,
-        }),
+        body: JSON.stringify({ token, signaturePngDataUrl: dataUrl }),
       });
       const json = (await res.json()) as { error?: string };
       if (!res.ok) {
-        setError(json.error ?? "signing failed");
+        setError(toJaError(json.error));
         return;
       }
       router.refresh();
-      router.push(`/?signed=${docId}`);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "network error");
+      router.push(`/sign/${docId}?t=${encodeURIComponent(token)}`);
+    } catch {
+      setError("通信エラーが発生しました。電波状況をご確認のうえ、もう一度お試しください。");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="flex flex-col gap-4 lg:flex-row">
+    <div className="flex flex-col gap-5 lg:flex-row">
       <div className="flex-1">
-        <div
-          ref={containerRef}
-          onClick={handlePageClick}
-          className={`flex flex-col items-center gap-4 ${alreadySigned ? "" : "cursor-crosshair"}`}
-        />
-        {loadError && <p className="mt-3 text-sm text-red-500">PDF load error: {loadError}</p>}
+        <div ref={containerRef} className="flex flex-col items-center gap-4" />
+        {loadError && <p className="mt-3 text-sm text-rose-600">PDFの読み込みエラー: {loadError}</p>}
         {!alreadySigned && pages.length > 0 && (
-          <p className="mt-3 text-xs text-zinc-500">
-            Tap anywhere on a page to drop a signature field. Tap a field to remove it.
+          <p className="mt-3 text-center text-xs text-zinc-500">
+            緑色の枠が、お客様のご署名が入る位置です。
           </p>
         )}
-        {pages.map((p) => {
-          const placed = fieldsByPage.get(p.pageNumber - 1) ?? [];
-          if (placed.length === 0) return null;
-          return (
-            <FieldOverlay
-              key={p.pageNumber}
-              pageIndex={p.pageNumber - 1}
-              fields={placed}
-              onRemove={removeField}
-            />
-          );
-        })}
       </div>
 
       {!alreadySigned && (
-        <aside className="flex h-fit w-full flex-col gap-3 rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 lg:w-80">
-          <h2 className="text-lg font-medium">Your signature</h2>
-          <div className="rounded-lg border border-zinc-300 bg-white dark:border-zinc-700">
-            <SignaturePad
-              ref={padRef}
-              penColor="black"
-              backgroundColor="white"
-              canvasProps={{
-                width: 280,
-                height: 140,
-                className: "rounded-lg",
-              }}
-            />
-          </div>
-          <div className="flex justify-between">
-            <button
-              type="button"
-              onClick={() => padRef.current?.clear()}
-              className="text-sm text-zinc-500 hover:underline"
-            >
-              Clear pad
-            </button>
-            <span className="text-xs text-zinc-400">{fields.length} field(s)</span>
+        <aside className="flex h-fit w-full flex-col gap-5 rounded-2xl border-2 border-emerald-400 bg-emerald-50/60 p-5 shadow-sm sm:p-6 lg:w-96">
+          <div>
+            <h2 className="text-base font-semibold text-zinc-900">こちらにご署名ください</h2>
+            <p className="mt-1 text-sm text-zinc-600">甲（委託者）　{signerName} 様</p>
           </div>
 
-          <label className="flex flex-col text-sm">
-            Signer name (optional)
+          <ol className="flex flex-col gap-1.5 text-sm text-zinc-700">
+            <li>1. 左の書類の内容をご確認ください。</li>
+            <li>2. 下の白い枠内に、指またはマウスでご署名（サイン）をお描きください。</li>
+            <li>3. 同意のチェックを入れ、「同意して署名する」を押してください。</li>
+          </ol>
+
+          <div className="flex flex-col gap-2">
+            <div ref={padWrapRef} className="relative w-full rounded-xl border border-zinc-300 bg-white">
+              <SignaturePad
+                ref={padRef}
+                penColor="#0a0a0a"
+                backgroundColor="#ffffff"
+                clearOnResize={false}
+                onEnd={() => setHasStroke(true)}
+                canvasProps={{ className: "block w-full touch-none rounded-xl" }}
+              />
+              {!hasStroke && (
+                <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-zinc-300">
+                  ここに署名
+                </span>
+              )}
+            </div>
+            <div className="flex items-center justify-between">
+              <button
+                type="button"
+                onClick={clearPad}
+                className="rounded-md px-2 py-1 text-sm text-zinc-500 hover:bg-zinc-100 hover:underline"
+              >
+                書き直す
+              </button>
+              <span className="text-xs text-zinc-400">枠内に手書きでご署名ください</span>
+            </div>
+          </div>
+
+          <label className="flex items-start gap-2.5 rounded-lg bg-white/70 p-3 text-sm leading-relaxed text-zinc-700">
             <input
-              type="text"
-              value={actor}
-              onChange={(e) => setActor(e.target.value)}
-              className="mt-1 rounded-lg border border-zinc-300 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-800"
+              type="checkbox"
+              checked={confirmed}
+              onChange={(e) => setConfirmed(e.target.checked)}
+              className="mt-0.5 h-4 w-4 shrink-0 accent-emerald-600"
             />
+            <span>
+              上記の書類の内容を確認し、これに同意します。署名と同時に、署名日時および接続元情報が
+              監査記録として保存されることに同意します。
+            </span>
           </label>
 
           <button
             type="button"
             disabled={busy}
             onClick={applySignature}
-            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+            className="w-full rounded-xl bg-emerald-600 px-5 py-3.5 text-base font-semibold text-white shadow-sm transition hover:bg-emerald-500 disabled:opacity-50"
           >
-            {busy ? "Stamping…" : "Sign & seal"}
+            {busy ? "署名を処理しています…" : "同意して署名する"}
           </button>
-          {error && <p className="text-sm text-red-500">{error}</p>}
-          <p className="text-xs text-zinc-500">
-            Stamping draws the signature into the PDF, appends an audit page, and re-hashes the result. Nothing leaves this machine.
+
+          {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+
+          <p className="text-xs leading-relaxed text-zinc-500">
+            ご署名後、署名済みの書類に改ざん検知（SHA-256）付きの記録が保存されます。
           </p>
         </aside>
       )}
@@ -250,42 +276,24 @@ export default function SignClient({ docId, alreadySigned, pdfUrl }: SignClientP
   );
 }
 
-interface FieldOverlayProps {
-  pageIndex: number;
-  fields: PlacedField[];
-  onRemove: (id: string) => void;
-}
-
-function FieldOverlay({ pageIndex, fields, onRemove }: FieldOverlayProps) {
-  useEffect(() => {
-    const host = document.querySelector(`[data-page-index="${pageIndex}"]`);
-    if (!host) return;
-    const overlayId = `overlay-${pageIndex}`;
-    let overlay = host.querySelector<HTMLDivElement>(`#${overlayId}`);
-    if (!overlay) {
-      overlay = document.createElement("div");
-      overlay.id = overlayId;
-      overlay.className = "pointer-events-none absolute inset-0";
-      host.appendChild(overlay);
-    }
-    overlay.innerHTML = "";
-    for (const f of fields) {
-      const box = document.createElement("button");
-      box.type = "button";
-      box.className =
-        "pointer-events-auto absolute rounded border-2 border-dashed border-emerald-500 bg-emerald-200/40 text-xs font-medium text-emerald-800 hover:bg-emerald-200/70";
-      box.style.left = `${f.xRatio * 100}%`;
-      box.style.top = `${f.yRatio * 100}%`;
-      box.style.width = `${f.widthRatio * 100}%`;
-      box.style.height = `${f.heightRatio * 100}%`;
-      box.textContent = "✕ signature";
-      box.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        onRemove(f.id);
-      });
-      overlay.appendChild(box);
-    }
-  }, [pageIndex, fields, onRemove]);
-
-  return null;
+// Map server error strings to polite Japanese for the signer.
+function toJaError(code: string | undefined): string {
+  switch (code) {
+    case "token expired":
+      return "署名用リンクの有効期限が切れています。新しいリンクの発行をご依頼ください。";
+    case "invalid signing token":
+      return "署名用リンクが無効です。メールのリンクから、もう一度お開きください。";
+    case "already signed":
+      return "このご署名はすでに受け付けております。";
+    case "document has no signer":
+      return "この書類には署名者が設定されていません。送信元にお問い合わせください。";
+    case "signature must be a valid, non-empty PNG image":
+      return "ご署名が正しく読み取れませんでした。枠内にもう一度ご署名ください。";
+    case "invalid body":
+      return "送信内容に問題がありました。ページを再読み込みのうえ、もう一度ご署名ください。";
+    case "not found":
+      return "対象の書類が見つかりませんでした。お手数ですが、送信元にお問い合わせください。";
+    default:
+      return "署名を完了できませんでした。お手数ですが、もう一度お試しください。";
+  }
 }

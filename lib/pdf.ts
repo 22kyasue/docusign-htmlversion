@@ -40,15 +40,27 @@ export async function appendAuditPage(input: AuditPageInput): Promise<Uint8Array
   const pdf = await PDFDocument.load(input.pdfBytes);
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
-  const page = pdf.addPage();
-  const { height } = page.getSize();
+  // `page` is reassigned when the events list overflows onto a new page, so the
+  // draw() closure below must read the CURRENT page, not a captured first one.
+  let page = pdf.addPage();
   const margin = 50;
-  let y = height - margin;
+  let y = page.getSize().height - margin;
 
+  // The standard Helvetica font is WinAnsi-only and THROWS on any character it
+  // can't encode (e.g. a Japanese signer name like「林」). We must not let an
+  // un-renderable glyph on a cosmetic audit page abort the whole sign, so we
+  // replace any non-WinAnsi character with "?" for the VISIBLE page only. The
+  // full, exact UTF-8 identity is preserved in the JSON document record and the
+  // append-only audit.log — the audit PDF page is a human-readable receipt, not
+  // the authoritative identity store. (Bundling a multi-MB CJK font for this
+  // would be the wrong trade.)
+  // Restrict to printable ASCII — a guaranteed-safe subset of WinAnsi (some
+  // 0x80-0xFF byte values are undefined in WinAnsi and would also throw).
+  const winAnsiSafe = (s: string) => s.replace(/[^\x20-\x7E]/g, "?");
   const draw = (text: string, opts: { size?: number; bold?: boolean; gap?: number } = {}) => {
     const size = opts.size ?? 10;
     const f = opts.bold ? bold : font;
-    page.drawText(text, { x: margin, y, size, font: f, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText(winAnsiSafe(text), { x: margin, y, size, font: f, color: rgb(0.1, 0.1, 0.1) });
     y -= (opts.gap ?? size + 4);
   };
 
@@ -56,17 +68,23 @@ export async function appendAuditPage(input: AuditPageInput): Promise<Uint8Array
   draw(`Document ID: ${input.documentId}`);
   draw(`Document Name: ${input.documentName}`);
   draw(`Original SHA-256: ${input.originalSha256}`);
-  draw(`Signed   SHA-256: ${input.signedSha256}`);
+  // This is the hash of the stamped PDF BEFORE this audit page was appended.
+  // The canonical, on-disk hash (of the full file, audit page included) is the
+  // value recorded on the document record + HMAC anchor — not this one, since a
+  // file cannot contain its own final hash. Labelled so the two are never
+  // confused when verifying.
+  draw(`Stamped SHA-256 (pre-audit-page): ${input.signedSha256}`);
   draw(`Generated: ${new Date().toISOString()}`);
   y -= 10;
   draw("Events", { size: 13, bold: true, gap: 18 });
 
   for (const e of input.entries) {
     if (y < margin + 40) {
-      // start a new audit page if we run out
-      const next = pdf.addPage();
-      const sz = next.getSize();
-      y = sz.height - margin;
+      // Overflow: start a new page AND point draw() at it (reassign `page`),
+      // otherwise overflow entries draw off the bottom of page 1 and the new
+      // page stays blank.
+      page = pdf.addPage();
+      y = page.getSize().height - margin;
     }
     draw(`${e.at}  ${e.action}${e.actor ? `  by ${e.actor}` : ""}`);
     if (e.ip || e.userAgent) {
