@@ -16,7 +16,10 @@ export type AuditEntry = {
     | "downloaded"
     | "seal_failed"
     | "webhook_delivered"
-    | "webhook_failed";
+    | "webhook_failed"
+    | "email_sent"
+    | "email_failed"
+    | "email_refused_banned";
   actor?: string;
   ip?: string;
   userAgent?: string;
@@ -69,6 +72,12 @@ export type DocumentRecord = {
   webhookDelivered?: boolean;
   webhookAttempts?: number;
   webhookLastError?: string;
+  // Completion-email delivery state. Mirrors the webhook fields: lets a reconciler
+  // re-fire a dropped email and makes "did the completion email send?" answerable
+  // from one field. Set true ONLY after a confirmed Resend 2xx (idempotent).
+  completionEmailSent?: boolean;
+  completionEmailAttempts?: number;
+  completionEmailLastError?: string;
   // Optional cockpit-side linkage echoed back on the completion webhook.
   externalRef?: {
     system: string;

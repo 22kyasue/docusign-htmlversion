@@ -2,6 +2,7 @@ import { listDocuments, getDocument, sealReadOnly, filePath } from "./storage";
 import { verifyFile } from "./anchor";
 import { appendAuditLog } from "./audit-log";
 import { deliverCompletion, buildCompletionPayload } from "./webhook";
+import { deliverCompletionEmail, buildCompletionEmail } from "./email";
 import type { DocumentRecord } from "./types";
 
 // Crash recovery + dropped-webhook re-fire. Runs once on server start (via
@@ -27,9 +28,10 @@ import type { DocumentRecord } from "./types";
 // needs the two idempotent repairs above. If the storage model ever promotes
 // files OUTSIDE the lock, revisit this.
 
-export async function runReconciler(): Promise<{ refired: number; resealed: number }> {
+export async function runReconciler(): Promise<{ refired: number; resealed: number; emailed: number }> {
   let refired = 0;
   let resealed = 0;
+  let emailed = 0;
 
   const docs = await listDocuments();
   for (const doc of docs) {
@@ -70,8 +72,21 @@ export async function runReconciler(): Promise<{ refired: number; resealed: numb
       await refireWebhook(doc);
       refired++;
     }
+
+    // (3) Re-fire a dropped completion EMAIL (signed PDF → signer + archive).
+    //     deliverCompletionEmail re-reads the freshest row + the persisted
+    //     completionEmailSent flag, so this is idempotent — a no-op if it already
+    //     sent. Closes the "process died between commit and email" gap.
+    if (doc.completionEmailSent !== true) {
+      try {
+        await deliverCompletionEmail(buildCompletionEmail(doc));
+      } catch {
+        // best-effort; deliverCompletionEmail is written to never throw
+      }
+      emailed++;
+    }
   }
-  return { refired, resealed };
+  return { refired, resealed, emailed };
 }
 
 async function refireWebhook(doc: DocumentRecord): Promise<void> {

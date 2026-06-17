@@ -12,6 +12,7 @@ import { sha256, hmacEquals } from "@/lib/crypto";
 import { computeAnchor, writeAnchorFile } from "@/lib/anchor";
 import { appendAuditLog } from "@/lib/audit-log";
 import { deliverCompletion, buildCompletionPayload } from "@/lib/webhook";
+import { deliverCompletionEmail, buildCompletionEmail } from "@/lib/email";
 import { isValidPng } from "@/lib/png-validate";
 import { isTokenExpired } from "@/lib/tokens";
 import { stampSignature, appendAuditPage } from "@/lib/pdf";
@@ -249,6 +250,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   //    completion; it has its own timeout + bounded retry and records its own
   //    outcome, so it can never block or fail the signer. Loud on failure.
   void deliverCompletion(buildCompletionPayload(outcome.document));
+
+  // 5) Fire the completion EMAIL — the signed PDF to BOTH the signer and the
+  //    archive address — the same way: after the response, fail-soft, idempotent
+  //    (completionEmailSent flag), loud on failure. It can never block or fail
+  //    the signer's request, and a banned recipient refuses the whole send.
+  void deliverCompletionEmail(buildCompletionEmail(outcome.document));
 
   return response;
 }

@@ -77,14 +77,26 @@ export default async function SignPage({ params, searchParams }: PageProps) {
       </header>
 
       {tokenStatus === "already_signed" && (
-        <Banner>
-          ご署名ありがとうございました。お客様のご署名は受け付けております。
-          {signer?.signedAt && (
-            <span className="mt-1 block font-mono text-xs opacity-80">
-              署名日時 {fmtJa(signer.signedAt)}
+        <div className="flex flex-col gap-3">
+          <Banner>
+            ご署名ありがとうございました。お客様のご署名は受け付けております。
+            {signer?.signedAt && (
+              <span className="mt-1 block font-mono text-xs opacity-80">
+                署名日時 {fmtJa(signer.signedAt)}
+              </span>
+            )}
+            <span className="mt-2 block text-xs opacity-90">
+              署名済みの控えは、ご登録のメールアドレスにもお送りいたします。
             </span>
-          )}
-        </Banner>
+          </Banner>
+          <a
+            href={`/api/documents/${doc.id}/file?variant=signed&download=1&t=${encodeURIComponent(token!)}`}
+            download
+            className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3.5 text-base font-semibold text-white shadow-sm transition hover:bg-emerald-500"
+          >
+            署名済みPDFをダウンロード
+          </a>
+        </div>
       )}
 
       <SignClient
