@@ -1,0 +1,45 @@
+# DocuSeal — Tobira Studio signing service
+# See ../../PICKUP.md for the full handoff. Quick start:
+#   cp .env.example .env   # fill HOST + POSTGRES_PASSWORD
+#   docker compose up -d
+#
+# Ports 80/443 must be free and open in the firewall. DocuSeal's built-in Caddy
+# auto-provisions Let's Encrypt TLS once HOST resolves (A record) to this box.
+
+services:
+  app:
+    image: docuseal/docuseal:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      HOST: ${HOST}
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/docuseal
+      FORCE_SSL: "true"
+      # --- SMTP: optional here; can instead be set in Settings → Email after boot ---
+      # SMTP_ADDRESS: ${SMTP_ADDRESS}
+      # SMTP_PORT: ${SMTP_PORT}
+      # SMTP_USERNAME: ${SMTP_USERNAME}
+      # SMTP_PASSWORD: ${SMTP_PASSWORD}
+      # SMTP_FROM: ${SMTP_FROM}
+      # SMTP_AUTHENTICATION: ${SMTP_AUTHENTICATION}
+      # SMTP_SECURITY: ${SMTP_SECURITY}
+    volumes:
+      - docuseal_data:/data
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: docuseal
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
+volumes:
+  docuseal_data:
+  pg_data:
